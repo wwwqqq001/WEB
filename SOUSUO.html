@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>S.H.I.T 标题搜索 + PDF 链接</title>
+  <style>
+    :root {
+      --bg: #f7f4ec;
+      --card: #ffffff;
+      --text: #1f1f1f;
+      --muted: #666;
+      --line: #e6e0d3;
+      --accent: #b08a2f;
+      --accent-dark: #866820;
+      --danger: #9c2a2a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "PingFang SC", "Noto Sans SC", sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 20% 0%, #fff8df 0 20%, transparent 40%),
+        linear-gradient(180deg, #f6f2e8 0%, #f9f7f0 100%);
+      min-height: 100vh;
+    }
+    .wrap {
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 24px 16px 40px;
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: 28px;
+      letter-spacing: 0.02em;
+    }
+    .sub {
+      margin: 0 0 16px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+    .bar {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+    input[type="text"] {
+      width: 100%;
+      padding: 12px 14px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #fff;
+      font-size: 15px;
+      outline: none;
+    }
+    input[type="text"]:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(176, 138, 47, 0.15);
+    }
+    button {
+      border: none;
+      border-radius: 10px;
+      padding: 0 18px;
+      background: var(--accent);
+      color: #fff;
+      font-weight: 700;
+      cursor: pointer;
+      font-size: 14px;
+    }
+    button:hover { background: var(--accent-dark); }
+    button:disabled { opacity: 0.6; cursor: not-allowed; }
+    .hint, .status {
+      font-size: 13px;
+      color: var(--muted);
+      margin: 8px 0;
+    }
+    .status.err { color: var(--danger); }
+    .list {
+      display: grid;
+      gap: 10px;
+      margin-top: 10px;
+    }
+    .item {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 12px 14px;
+    }
+    .title {
+      margin: 0 0 8px;
+      font-size: 16px;
+      line-height: 1.4;
+    }
+    .meta {
+      margin: 0 0 8px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .links {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .links a {
+      text-decoration: none;
+      font-size: 12px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 6px 10px;
+      color: #222;
+      background: #fff;
+    }
+    .links a:hover { border-color: var(--accent); color: var(--accent-dark); }
+    .empty {
+      color: var(--muted);
+      font-size: 14px;
+      padding: 18px 6px;
+    }
+    code {
+      background: #f3efe3;
+      border-radius: 4px;
+      padding: 1px 4px;
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>S.H.I.T 标题搜索 + PDF 下载</h1>
+    <p class="sub">输入标题关键词，返回：标题 / 原文地址 / 可下载 PDF 签名链接（有效期约 1 小时）。</p>
+
+    <div class="bar">
+      <input id="q" type="text" placeholder="例如：喜欢 回忆 机械飞升">
+      <button id="searchBtn" type="button">搜索</button>
+    </div>
+
+    <p class="hint">默认最多返回 30 条，按创建时间倒序。</p>
+    <p id="status" class="status"></p>
+    <div id="list" class="list"></div>
+    <p id="empty" class="empty" style="display:none;">没有找到匹配标题。</p>
+    <p class="hint">若你直接双击打开本文件时无法请求接口，可用本地静态服务打开（例如 <code>python -m http.server</code>）。</p>
+  </div>
+
+  <script>
+    const SUPABASE_URL = "https://bcgdqepzakcufaadgnda.supabase.co";
+    const API_KEY = "sb_publishable_wHqWLjQwO2lMwkGLeBktng_Mk_xf5xd";
+    const SITE_URL = "https://shitjournal.org";
+
+    const qEl = document.getElementById("q");
+    const btnEl = document.getElementById("searchBtn");
+    const statusEl = document.getElementById("status");
+    const listEl = document.getElementById("list");
+    const emptyEl = document.getElementById("empty");
+
+    function setStatus(msg, isErr = false) {
+      statusEl.textContent = msg || "";
+      statusEl.className = isErr ? "status err" : "status";
+    }
+
+    function escapeHTML(s) {
+      return String(s).replace(/[&<>"']/g, (m) => (
+        { "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[m]
+      ));
+    }
+
+    function encodeStoragePath(path) {
+      return String(path)
+        .split("/")
+        .map((seg) => encodeURIComponent(seg))
+        .join("/");
+    }
+
+    async function fetchJSON(url, init = {}) {
+      const res = await fetch(url, init);
+      if (!res.ok) {
+        let detail = "";
+        try { detail = await res.text(); } catch (_) {}
+        throw new Error(`HTTP ${res.status}${detail ? `: ${detail}` : ""}`);
+      }
+      return res.json();
+    }
+
+    async function searchTitles(keyword) {
+      const query = encodeURIComponent(`*${keyword}*`);
+      const url = `${SUPABASE_URL}/rest/v1/preprints_with_ratings_mat`
+        + `?select=id,manuscript_title,author_name,zone,pdf_path,created_at`
+        + `&manuscript_title=ilike.${query}`
+        + `&order=created_at.desc`
+        + `&limit=30`;
+      return fetchJSON(url, {
+        headers: {
+          apikey: API_KEY,
+          Authorization: `Bearer ${API_KEY}`
+        }
+      });
+    }
+
+    async function createPdfSignedUrl(pdfPath) {
+      const safePath = encodeStoragePath(pdfPath);
+      const url = `${SUPABASE_URL}/storage/v1/object/sign/manuscripts/${safePath}`;
+      const data = await fetchJSON(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          apikey: API_KEY,
+          Authorization: `Bearer ${API_KEY}`
+        },
+        body: JSON.stringify({ expiresIn: 3600 })
+      });
+      const signed = data.signedURL || data.signedUrl;
+      if (!signed) return null;
+      return `${SUPABASE_URL}/storage/v1${signed}`;
+    }
+
+    function renderItems(items) {
+      listEl.innerHTML = "";
+      emptyEl.style.display = items.length ? "none" : "block";
+
+      for (const row of items) {
+        const original = `${SITE_URL}/preprints/${row.id}`;
+        const title = escapeHTML(row.manuscript_title || "(无标题)");
+        const author = escapeHTML(row.author_name || "未知作者");
+        const zone = escapeHTML(row.zone || "unknown");
+        const created = row.created_at ? new Date(row.created_at).toLocaleString("zh-CN") : "-";
+
+        const div = document.createElement("div");
+        div.className = "item";
+        div.innerHTML = `
+          <h3 class="title">${title}</h3>
+          <p class="meta">作者：${author} ｜ 分区：${zone} ｜ 创建时间：${escapeHTML(created)}</p>
+          <div class="links">
+            <a href="${original}" target="_blank" rel="noopener noreferrer">原文地址</a>
+            <a href="#" data-role="pdf" data-id="${escapeHTML(row.id)}">正在生成 PDF 链接...</a>
+          </div>
+        `;
+        listEl.appendChild(div);
+      }
+    }
+
+    async function fillPdfLinks(items) {
+      for (const row of items) {
+        const a = Array.from(listEl.querySelectorAll('a[data-role="pdf"]'))
+          .find((el) => el.dataset.id === row.id);
+        if (!a) continue;
+
+        if (!row.pdf_path) {
+          a.textContent = "无 PDF 路径";
+          a.removeAttribute("href");
+          continue;
+        }
+
+        try {
+          const signedUrl = await createPdfSignedUrl(row.pdf_path);
+          if (!signedUrl) {
+            a.textContent = "PDF 链接生成失败";
+            a.removeAttribute("href");
+            continue;
+          }
+          a.href = signedUrl;
+          a.target = "_blank";
+          a.rel = "noopener noreferrer";
+          a.textContent = "PDF 下载链接";
+        } catch (err) {
+          a.textContent = "PDF 链接失败";
+          a.removeAttribute("href");
+          a.title = String(err.message || err);
+        }
+      }
+    }
+
+    async function handleSearch() {
+      const keyword = qEl.value.trim();
+      if (!keyword) {
+        setStatus("请先输入关键词。", true);
+        return;
+      }
+
+      btnEl.disabled = true;
+      setStatus("正在搜索标题...");
+      listEl.innerHTML = "";
+      emptyEl.style.display = "none";
+
+      try {
+        const rows = await searchTitles(keyword);
+        renderItems(rows);
+        setStatus(`已找到 ${rows.length} 条，正在生成 PDF 链接...`);
+        await fillPdfLinks(rows);
+        setStatus(`完成：${rows.length} 条结果。`);
+      } catch (err) {
+        setStatus(`请求失败：${err.message || err}`, true);
+        listEl.innerHTML = "";
+        emptyEl.style.display = "none";
+      } finally {
+        btnEl.disabled = false;
+      }
+    }
+
+    btnEl.addEventListener("click", handleSearch);
+    qEl.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") handleSearch();
+    });
+  </script>
+</body>
+</html>
